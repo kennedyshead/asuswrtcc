@@ -1,8 +1,9 @@
 """Support for ASUSWRT routers."""
 
 from __future__ import annotations
+from typing import final
 
-from homeassistant.components.device_tracker import ScannerEntity
+from homeassistant.components.device_tracker.config_entry import ScannerEntity
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -20,7 +21,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up device tracker for AsusWrt component."""
     router = entry.runtime_data
-    tracked: set = set()
+    tracked: set[str] = set()
 
     @callback
     def update_router() -> None:
@@ -41,7 +42,7 @@ def add_entities(
     tracked: set[str],
 ) -> None:
     """Add new tracker entities from the router."""
-    new_tracked = []
+    new_tracked: list[AsusWrtDevice] = []
 
     for mac, device in router.devices.items():
         if mac in tracked:
@@ -53,6 +54,7 @@ def add_entities(
     async_add_entities(new_tracked)
 
 
+@final
 class AsusWrtDevice(ScannerEntity):
     """Representation of a AsusWrt device."""
 

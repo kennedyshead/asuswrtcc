@@ -5,12 +5,11 @@ from __future__ import annotations
 import logging
 import os
 import socket
-from typing import Any, cast
+from typing import Any, cast, final
 
-from asusrouter import AsusRouterError
 import voluptuous as vol
 
-from homeassistant.components.device_tracker import (
+from homeassistant.components.device_tracker.const import (
     CONF_CONSIDER_HOME,
     DEFAULT_CONSIDER_HOME,
 )
@@ -47,16 +46,12 @@ from .const import (
     DOMAIN,
     MODE_AP,
     MODE_ROUTER,
-    PROTOCOL_HTTP,
-    PROTOCOL_HTTPS,
     PROTOCOL_SSH,
     PROTOCOL_TELNET,
 )
 
 ALLOWED_PROTOCOL = [
-    PROTOCOL_HTTPS,
     PROTOCOL_SSH,
-    PROTOCOL_HTTP,
     PROTOCOL_TELNET,
 ]
 
@@ -91,23 +86,19 @@ async def get_options_schema(handler: SchemaCommonFlowHandler) -> vol.Schema:
     """Get options schema."""
     options_flow: SchemaOptionsFlowHandler
     options_flow = cast(SchemaOptionsFlowHandler, handler.parent_handler)
-    used_protocol = options_flow.config_entry.data[CONF_PROTOCOL]
-    if used_protocol in [PROTOCOL_SSH, PROTOCOL_TELNET]:
-        data_schema = OPTIONS_SCHEMA.extend(
+    data_schema = OPTIONS_SCHEMA.extend(
+        {
+            vol.Required(CONF_INTERFACE, default=DEFAULT_INTERFACE): str,
+            vol.Required(CONF_DNSMASQ, default=DEFAULT_DNSMASQ): str,
+        }
+    )
+    if options_flow.config_entry.data[CONF_MODE] == MODE_AP:
+        return data_schema.extend(
             {
-                vol.Required(CONF_INTERFACE, default=DEFAULT_INTERFACE): str,
-                vol.Required(CONF_DNSMASQ, default=DEFAULT_DNSMASQ): str,
+                vol.Optional(CONF_REQUIRE_IP, default=True): bool,
             }
         )
-        if options_flow.config_entry.data[CONF_MODE] == MODE_AP:
-            return data_schema.extend(
-                {
-                    vol.Optional(CONF_REQUIRE_IP, default=True): bool,
-                }
-            )
-        return data_schema
-
-    return OPTIONS_SCHEMA
+    return data_schema
 
 
 OPTIONS_FLOW = {
@@ -129,6 +120,7 @@ def _get_ip(host: str) -> str | None:
         return None
 
 
+@final
 class AsusWrtFlowHandler(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for AsusWRT."""
 
@@ -160,7 +152,7 @@ class AsusWrtFlowHandler(ConfigFlow, domain=DOMAIN):
             **add_schema,
             vol.Required(
                 CONF_PROTOCOL,
-                default=user_input.get(CONF_PROTOCOL, PROTOCOL_HTTPS),
+                default=user_input.get(CONF_PROTOCOL, PROTOCOL_SSH),
             ): SelectSelector(
                 SelectSelectorConfig(
                     options=ALLOWED_PROTOCOL, translation_key="protocols"
@@ -189,14 +181,6 @@ class AsusWrtFlowHandler(ConfigFlow, domain=DOMAIN):
         try:
             await api.async_connect()
 
-        except (AsusRouterError, OSError):
-            _LOGGER.error(
-                "Error connecting to the AsusWrt router at %s using protocol %s",
-                host,
-                protocol,
-            )
-            error = RESULT_CONN_ERROR
-
         except Exception:
             _LOGGER.exception(
                 "Unknown error connecting with AsusWrt router at %s using protocol %s",
@@ -222,7 +206,7 @@ class AsusWrtFlowHandler(ConfigFlow, domain=DOMAIN):
             host,
             protocol,
         )
-        unique_id = api.label_mac
+        unique_id = api.label
         await api.async_disconnect()
 
         return RESULT_SUCCESS, unique_id

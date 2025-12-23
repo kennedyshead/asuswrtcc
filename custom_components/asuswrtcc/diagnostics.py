@@ -58,9 +58,9 @@ async def async_get_config_entry_diagnostics(
         if state:
             state_dict = dict(state.as_dict())
             # The entity_id is already provided at root level.
-            state_dict.pop("entity_id", None)
+            del state_dict["entity_id"]
             # The context doesn't provide useful information in this case.
-            state_dict.pop("context", None)
+            del state_dict["context"]
 
         data["device"]["entities"][entity_entry.entity_id] = {
             **async_redact_data(

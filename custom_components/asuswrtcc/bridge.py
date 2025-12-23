@@ -2,21 +2,17 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Coroutine
-import functools
 import logging
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, final
 
-from aioasuswrt.asuswrt import AsusWrt as AsusWrtLegacy
-from aiohttp import ClientSession
-from asusrouter import AsusRouter, AsusRouterError
-from asusrouter.config import ARConfigKey
-from asusrouter.modules.client import AsusClient
-from asusrouter.modules.connection import ConnectionState
-from asusrouter.modules.data import AsusData
-from asusrouter.modules.homeassistant import convert_to_ha_data, convert_to_ha_sensors
-from asusrouter.tools.connection import get_cookie_jar
+from aioasuswrt import (
+    AsusWrt as AsusWrtLegacy,
+    AuthConfig,
+    ConnectionType,
+    Mode,
+    Settings,
+    connect_to_router as create_connection_aioasuswrt,
+)
 
 from homeassistant.const import (
     CONF_HOST,
@@ -27,9 +23,7 @@ from homeassistant.const import (
     CONF_USERNAME,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_create_clientsession
 from homeassistant.helpers.device_registry import format_mac
-from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from .const import (
     CONF_DNSMASQ,
@@ -40,17 +34,14 @@ from .const import (
     DEFAULT_INTERFACE,
     KEY_METHOD,
     KEY_SENSORS,
-    PROTOCOL_HTTP,
-    PROTOCOL_HTTPS,
+    MODE_ROUTER,
     PROTOCOL_TELNET,
     SENSORS_BYTES,
     SENSORS_LOAD_AVG,
     SENSORS_MEMORY,
     SENSORS_RATES,
-    SENSORS_TEMPERATURES_LEGACY,
     SENSORS_UPTIME,
 )
-from .helpers import clean_dict, translate_to_legacy
 
 SENSORS_TYPE_BYTES = "sensors_bytes"
 SENSORS_TYPE_COUNT = "sensors_count"
@@ -72,166 +63,66 @@ class WrtDevice(NamedTuple):
 
 _LOGGER = logging.getLogger(__name__)
 
-type _FuncType[_T] = Callable[
-    [_T],
-    Awaitable[
-        list[str]
-        | tuple[float | None, float | None]
-        | list[float]
-        | dict[str, float | str | None]
-        | dict[str, float]
-    ],
-]
-type _ReturnFuncType[_T] = Callable[[_T], Coroutine[Any, Any, dict[str, Any]]]
 
-
-def handle_errors_and_zip[_AsusWrtBridgeT: AsusWrtBridge](
-    exceptions: type[Exception] | tuple[type[Exception], ...], keys: list[str] | None
-) -> Callable[[_FuncType[_AsusWrtBridgeT]], _ReturnFuncType[_AsusWrtBridgeT]]:
-    """Run library methods and zip results or manage exceptions."""
-
-    def _handle_errors_and_zip(
-        func: _FuncType[_AsusWrtBridgeT],
-    ) -> _ReturnFuncType[_AsusWrtBridgeT]:
-        """Run library methods and zip results or manage exceptions."""
-
-        @functools.wraps(func)
-        async def _wrapper(
-            self: _AsusWrtBridgeT,
-        ) -> dict[str, float | str | None] | dict[str, float]:
-            try:
-                data = await func(self)
-            except exceptions as exc:
-                raise UpdateFailed(exc) from exc
-
-            if keys is None:
-                if not isinstance(data, dict):
-                    raise UpdateFailed("Received invalid data type")
-                return data
-
-            if isinstance(data, dict):
-                return dict(zip(keys, list(data.values()), strict=False))
-            return dict(zip(keys, data, strict=False))
-
-        return _wrapper
-
-    return _handle_errors_and_zip
-
-
-class AsusWrtBridge(ABC):
+@final
+class AsusWrtBridge:
     """The Base Bridge abstract class."""
 
-    @staticmethod
+    @classmethod
     def get_bridge(
+        cls,
         hass: HomeAssistant,
         conf: dict[str, str | int],
         options: dict[str, str | bool | int] | None = None,
     ) -> AsusWrtBridge:
         """Get Bridge instance."""
-        if conf[CONF_PROTOCOL] in (PROTOCOL_HTTPS, PROTOCOL_HTTP):
-            session = async_create_clientsession(
-                hass,
-                cookie_jar=get_cookie_jar(),
-            )
-            return AsusWrtHttpBridge(conf, session)
-        return AsusWrtLegacyBridge(conf, options)
+        return cls(hass, conf, options)
 
-    def __init__(self, host: str) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        conf: dict[str, str | int],
+        options: dict[str, str | bool | int] | None = None,
+    ) -> None:
         """Initialize Bridge."""
-        self._configuration_url = f"http://{host}"
-        self._host = host
+        _host: str = str(conf[CONF_HOST])
+        self._configuration_url = f"http://{_host}"
+        self._host = _host
         self._firmware: str | None = None
         self._label_mac: str | None = None
         self._model: str | None = None
         self._model_id: str | None = None
         self._serial_number: str | None = None
 
-    @property
-    def configuration_url(self) -> str:
-        """Return configuration URL."""
-        return self._configuration_url
-
-    @property
-    def host(self) -> str:
-        """Return hostname."""
-        return self._host
-
-    @property
-    def firmware(self) -> str | None:
-        """Return firmware information."""
-        return self._firmware
-
-    @property
-    def label_mac(self) -> str | None:
-        """Return label mac information."""
-        return self._label_mac
-
-    @property
-    def model(self) -> str | None:
-        """Return model information."""
-        return self._model
-
-    @property
-    def model_id(self) -> str | None:
-        """Return model_id information."""
-        return self._model_id
-
-    @property
-    def serial_number(self) -> str | None:
-        """Return serial number information."""
-        return self._serial_number
-
-    @property
-    @abstractmethod
-    def is_connected(self) -> bool:
-        """Get connected status."""
-
-    @abstractmethod
-    async def async_connect(self) -> None:
-        """Connect to the device."""
-
-    @abstractmethod
-    async def async_disconnect(self) -> None:
-        """Disconnect to the device."""
-
-    @abstractmethod
-    async def async_get_connected_devices(self) -> dict[str, WrtDevice]:
-        """Get list of connected devices."""
-
-    @abstractmethod
-    async def async_get_available_sensors(self) -> dict[str, dict[str, Any]]:
-        """Return a dictionary of available sensors for this bridge."""
-
-
-class AsusWrtLegacyBridge(AsusWrtBridge):
-    """The Bridge that use legacy library."""
-
-    def __init__(
-        self, conf: dict[str, Any], options: dict[str, Any] | None = None
-    ) -> None:
-        """Initialize Bridge."""
-        super().__init__(conf[CONF_HOST])
-        self._protocol: str = conf[CONF_PROTOCOL]
         self._api: AsusWrtLegacy = self._get_api(conf, options)
 
     @staticmethod
     def _get_api(
-        conf: dict[str, Any], options: dict[str, Any] | None = None
+        conf: dict[str, str | int],
+        options: dict[str, str | bool | int] | None = None,
     ) -> AsusWrtLegacy:
         """Get the AsusWrtLegacy API."""
         opt = options or {}
+        port = conf.get(CONF_PORT, None)
 
-        return AsusWrtLegacy(
-            conf[CONF_HOST],
-            conf.get(CONF_PORT),
-            conf[CONF_PROTOCOL] == PROTOCOL_TELNET,
-            conf[CONF_USERNAME],
-            conf.get(CONF_PASSWORD, ""),
-            conf.get(CONF_SSH_KEY, ""),
-            conf[CONF_MODE],
-            opt.get(CONF_REQUIRE_IP, True),
-            interface=opt.get(CONF_INTERFACE, DEFAULT_INTERFACE),
-            dnsmasq=opt.get(CONF_DNSMASQ, DEFAULT_DNSMASQ),
+        return create_connection_aioasuswrt(
+            str(conf[CONF_HOST]),
+            AuthConfig(
+                username=str(conf.get(CONF_USERNAME)),
+                password=str(conf.get(CONF_PASSWORD)),
+                connection_type=ConnectionType.TELNET
+                if conf[CONF_PROTOCOL] == PROTOCOL_TELNET
+                else ConnectionType.SSH,
+                ssh_key=str(conf.get(CONF_SSH_KEY)),
+                port=int(port) if port else None,
+                passphrase=None,
+            ),
+            Settings(
+                mode=Mode.ROUTER if conf[CONF_MODE] == MODE_ROUTER else Mode.AP,
+                require_ip=opt.get(CONF_REQUIRE_IP, True),
+                wan_interface=opt.get(CONF_INTERFACE, DEFAULT_INTERFACE),
+                dnsmasq=opt.get(CONF_DNSMASQ, DEFAULT_DNSMASQ),
+            ),
         )
 
     @property
@@ -241,7 +132,11 @@ class AsusWrtLegacyBridge(AsusWrtBridge):
 
     async def async_connect(self) -> None:
         """Connect to the device."""
-        await self._api.connection.async_connect()
+        try:
+            await self._api.connect()
+        except ConnectionError as err:
+            _LOGGER.error("Unable to connect to router (%s)", err)
+            return
 
         # get main router properties
         if self._label_mac is None:
@@ -253,27 +148,25 @@ class AsusWrtLegacyBridge(AsusWrtBridge):
 
     async def async_disconnect(self) -> None:
         """Disconnect to the device."""
-        await self._api.async_disconnect()
+        await self._api.disconnect()
 
     async def async_get_connected_devices(self) -> dict[str, WrtDevice]:
         """Get list of connected devices."""
-        api_devices = await self._api.async_get_connected_devices()
+        _devices = await self._api.get_connected_devices(reachable=True)
+        if not _devices:
+            return {}
         return {
-            format_mac(mac): WrtDevice(dev.ip, dev.name, None)
-            for mac, dev in api_devices.items()
+            format_mac(mac): WrtDevice(
+                dev.device_data.get("ip"),
+                dev.device_data.get("name"),
+                dev.interface.get("name"),
+            )
+            for mac, dev in _devices.items()
         }
 
-    async def _get_nvram_info(self, info_type: str) -> dict[str, Any]:
+    async def _get_nvram_info(self, info_type: str) -> dict[str, str] | None:
         """Get AsusWrt router info from nvram."""
-        info = {}
-        try:
-            info = await self._api.async_get_nvram(info_type)
-        except OSError as exc:
-            _LOGGER.warning(
-                "Error calling method async_get_nvram(%s): %s", info_type, exc
-            )
-
-        return info
+        return await self._api.get_nvram(info_type)
 
     async def _get_label_mac(self) -> None:
         """Get label mac information."""
@@ -318,211 +211,26 @@ class AsusWrtLegacyBridge(AsusWrtBridge):
             },
         }
 
-    async def _get_available_temperature_sensors(self) -> list[str]:
+    async def _get_available_temperature_sensors(self) -> dict[str, float] | None:
         """Check which temperature information is available on the router."""
-        availability = await self._api.async_find_temperature_commands()
-        return [SENSORS_TEMPERATURES_LEGACY[i] for i in range(3) if availability[i]]
+        return await self._api.get_temperature()
 
-    @handle_errors_and_zip((IndexError, OSError, ValueError), SENSORS_BYTES)
-    async def _get_bytes(self) -> tuple[float | None, float | None]:
+    async def _get_bytes(self) -> dict[str, int]:
         """Fetch byte information from the router."""
-        return await self._api.async_get_bytes_total()
+        items = await self._api.total_transfer()
+        return {f"sensor_{key}_bytes": value for key, value in items.items()}
 
-    @handle_errors_and_zip((IndexError, OSError, ValueError), SENSORS_RATES)
-    async def _get_rates(self) -> tuple[float, float]:
+    async def _get_rates(self) -> dict[str, int] | None:
         """Fetch rates information from the router."""
-        return await self._api.async_get_current_transfer_rates()
+        items = await self._api.get_current_transfer_rates()
+        if items:
+            return {f"sensor_{key}_rates": value for key, value in items.items()}
+        return None
 
-    @handle_errors_and_zip((IndexError, OSError, ValueError), SENSORS_LOAD_AVG)
-    async def _get_load_avg(self) -> list[float]:
+    async def _get_load_avg(self) -> dict[str, float] | None:
         """Fetch load average information from the router."""
-        return await self._api.async_get_loadavg()
+        return await self._api.get_loadavg()
 
-    @handle_errors_and_zip((OSError, ValueError), None)
-    async def _get_temperatures(self) -> dict[str, float]:
+    async def _get_temperatures(self) -> dict[str, float] | None:
         """Fetch temperatures information from the router."""
-        return await self._api.async_get_temperature()
-
-
-class AsusWrtHttpBridge(AsusWrtBridge):
-    """The Bridge that use HTTP library."""
-
-    def __init__(self, conf: dict[str, Any], session: ClientSession) -> None:
-        """Initialize Bridge that use HTTP library."""
-        super().__init__(conf[CONF_HOST])
-        # Get API configuration
-        config = self._get_api_config()
-        self._api = self._get_api(conf, session, config)
-
-    @staticmethod
-    def _get_api(
-        conf: dict[str, Any], session: ClientSession, config: dict[ARConfigKey, Any]
-    ) -> AsusRouter:
-        """Get the AsusRouter API."""
-        return AsusRouter(
-            hostname=conf[CONF_HOST],
-            username=conf[CONF_USERNAME],
-            password=conf.get(CONF_PASSWORD, ""),
-            use_ssl=conf[CONF_PROTOCOL] == PROTOCOL_HTTPS,
-            port=conf.get(CONF_PORT),
-            session=session,
-            config=config,
-        )
-
-    def _get_api_config(self) -> dict[ARConfigKey, Any]:
-        """Get configuration for the API."""
-        return {
-            # Enable automatic temperature data correction in the library
-            ARConfigKey.OPTIMISTIC_TEMPERATURE: True,
-            # Disable `warning`-level log message when temperature
-            # is corrected by setting it to already notified.
-            ARConfigKey.NOTIFIED_OPTIMISTIC_TEMPERATURE: True,
-        }
-
-    @property
-    def is_connected(self) -> bool:
-        """Get connected status."""
-        return self._api.connected
-
-    async def async_connect(self) -> None:
-        """Connect to the device."""
-        await self._api.async_connect()
-
-        # Collect the identity
-        _identity = await self._api.async_get_identity()
-
-        # get main router properties
-        if mac := _identity.mac:
-            self._label_mac = format_mac(mac)
-        self._configuration_url = self._api.webpanel
-        self._firmware = str(_identity.firmware)
-        self._model = _identity.model
-        self._model_id = _identity.product_id
-        self._serial_number = _identity.serial
-
-    async def async_disconnect(self) -> None:
-        """Disconnect to the device."""
-        await self._api.async_disconnect()
-
-    async def _get_data(
-        self,
-        datatype: AsusData,
-        force: bool = False,
-    ) -> dict[str, Any]:
-        """Get data from the device.
-
-        This is a generic method which automatically converts to
-        the Home Assistant-compatible format.
-        """
-        try:
-            raw = await self._api.async_get_data(datatype, force=force)
-            return translate_to_legacy(clean_dict(convert_to_ha_data(raw)))
-        except AsusRouterError as ex:
-            raise UpdateFailed(ex) from ex
-
-    async def _get_sensors(self, datatype: AsusData) -> list[str]:
-        """Get the available sensors.
-
-        This is a generic method which automatically converts to
-        the Home Assistant-compatible format.
-        """
-        sensors = []
-        try:
-            data = await self._api.async_get_data(datatype)
-            # Get the list of sensors from the raw data
-            # and translate in to the legacy format
-            sensors = translate_to_legacy(convert_to_ha_sensors(data, datatype))
-            _LOGGER.debug("Available `%s` sensors: %s", datatype.value, sensors)
-        except AsusRouterError as ex:
-            _LOGGER.warning(
-                "Cannot get available `%s` sensors with exception: %s",
-                datatype.value,
-                ex,
-            )
-        return sensors
-
-    async def async_get_connected_devices(self) -> dict[str, WrtDevice]:
-        """Get list of connected devices."""
-        api_devices: dict[str, AsusClient] = await self._api.async_get_data(
-            AsusData.CLIENTS, force=True
-        )
-        return {
-            format_mac(mac): WrtDevice(
-                dev.connection.ip_address, dev.description.name, dev.connection.node
-            )
-            for mac, dev in api_devices.items()
-            if dev.connection is not None
-            and dev.description is not None
-            and dev.connection.ip_address is not None
-            and dev.state is ConnectionState.CONNECTED
-        }
-
-    async def async_get_available_sensors(self) -> dict[str, dict[str, Any]]:
-        """Return a dictionary of available sensors for this bridge."""
-        return {
-            SENSORS_TYPE_BYTES: {
-                KEY_SENSORS: SENSORS_BYTES,
-                KEY_METHOD: self._get_bytes,
-            },
-            SENSORS_TYPE_CPU: {
-                KEY_SENSORS: await self._get_sensors(AsusData.CPU),
-                KEY_METHOD: self._get_cpu_usage,
-            },
-            SENSORS_TYPE_LOAD_AVG: {
-                KEY_SENSORS: await self._get_sensors(AsusData.SYSINFO),
-                KEY_METHOD: self._get_load_avg,
-            },
-            SENSORS_TYPE_MEMORY: {
-                KEY_SENSORS: SENSORS_MEMORY,
-                KEY_METHOD: self._get_memory_usage,
-            },
-            SENSORS_TYPE_RATES: {
-                KEY_SENSORS: SENSORS_RATES,
-                KEY_METHOD: self._get_rates,
-            },
-            SENSORS_TYPE_UPTIME: {
-                KEY_SENSORS: SENSORS_UPTIME,
-                KEY_METHOD: self._get_uptime,
-            },
-            SENSORS_TYPE_TEMPERATURES: {
-                KEY_SENSORS: await self._get_sensors(AsusData.TEMPERATURE),
-                KEY_METHOD: self._get_temperatures,
-            },
-        }
-
-    async def _get_bytes(self) -> Any:
-        """Fetch byte information from the router."""
-        return await self._get_data(AsusData.NETWORK)
-
-    async def _get_rates(self) -> Any:
-        """Fetch rates information from the router."""
-        data = await self._get_data(AsusData.NETWORK)
-        # Convert from bits/s to Bytes/s for compatibility with legacy sensors
-        return {
-            key: (
-                value / 8
-                if key in SENSORS_RATES and isinstance(value, (int, float))
-                else value
-            )
-            for key, value in data.items()
-        }
-
-    async def _get_load_avg(self) -> Any:
-        """Fetch cpu load avg information from the router."""
-        return await self._get_data(AsusData.SYSINFO)
-
-    async def _get_temperatures(self) -> Any:
-        """Fetch temperatures information from the router."""
-        return await self._get_data(AsusData.TEMPERATURE)
-
-    async def _get_cpu_usage(self) -> Any:
-        """Fetch cpu information from the router."""
-        return await self._get_data(AsusData.CPU)
-
-    async def _get_memory_usage(self) -> Any:
-        """Fetch memory information from the router."""
-        return await self._get_data(AsusData.RAM)
-
-    async def _get_uptime(self) -> dict[str, Any]:
-        """Fetch uptime from the router."""
-        return await self._get_data(AsusData.BOOTTIME)
+        return await self._api.get_temperature()

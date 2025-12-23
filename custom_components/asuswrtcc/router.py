@@ -5,11 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, final
 
-from asusrouter import AsusRouterError
 
-from homeassistant.components.device_tracker import (
+from homeassistant.components.device_tracker.const import (
     CONF_CONSIDER_HOME,
     DEFAULT_CONSIDER_HOME,
     DOMAIN as TRACKER_DOMAIN,
@@ -52,6 +51,7 @@ SENSORS_TYPE_COUNT = "sensors_count"
 _LOGGER = logging.getLogger(__name__)
 
 
+@final
 class AsusWrtSensorDataHandler:
     """Data handler for AsusWrt sensor."""
 
@@ -104,6 +104,7 @@ class AsusWrtSensorDataHandler:
         return coordinator
 
 
+@final
 class AsusWrtDevInfo:
     """Representation of a AsusWrt device info."""
 
@@ -159,6 +160,7 @@ class AsusWrtDevInfo:
         return self._last_activity
 
 
+@final
 class AsusWrtRouter:
     """Representation of a AsusWrt router."""
 
@@ -274,7 +276,7 @@ class AsusWrtRouter:
             async_track_time_interval(self.hass, self.update_all, SCAN_INTERVAL)
         )
 
-    async def update_all(self, now: datetime | None = None) -> None:
+    async def update_all(self, _: datetime | None = None) -> None:
         """Update all AsusWrt platforms."""
         await self.update_devices()
 
@@ -284,7 +286,7 @@ class AsusWrtRouter:
         _LOGGER.debug("Checking devices for ASUS router %s", self.host)
         try:
             wrt_devices = await self._api.async_get_connected_devices()
-        except (OSError, AsusRouterError) as exc:
+        except ConnectionError as exc:
             if not self._connect_error:
                 self._connect_error = True
                 _LOGGER.error(
