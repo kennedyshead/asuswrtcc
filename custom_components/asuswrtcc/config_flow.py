@@ -206,7 +206,7 @@ class AsusWrtFlowHandler(ConfigFlow, domain=DOMAIN):
             host,
             protocol,
         )
-        unique_id = api.label
+        unique_id = api._label_mac
         await api.async_disconnect()
 
         return RESULT_SUCCESS, unique_id

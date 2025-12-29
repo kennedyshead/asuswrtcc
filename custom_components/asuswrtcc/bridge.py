@@ -96,6 +96,32 @@ class AsusWrtBridge:
 
         self._api: AsusWrtLegacy = self._get_api(conf, options)
 
+    @property
+    def host(self) -> str:
+        if not self._host:
+            raise ConnectionError("Not connected")
+        return self._host
+
+    @property
+    def configuration_url(self) -> str:
+        return self._configuration_url
+
+    @property
+    def model(self) -> str | None:
+        return self._model
+
+    @property
+    def model_id(self) -> str | None:
+        return self._model_id
+
+    @property
+    def serial_number(self) -> str | None:
+        return self._serial_number
+
+    @property
+    def firmware(self) -> str | None:
+        return self._firmware
+
     @staticmethod
     def _get_api(
         conf: dict[str, str | int],
@@ -104,6 +130,7 @@ class AsusWrtBridge:
         """Get the AsusWrtLegacy API."""
         opt = options or {}
         port = conf.get(CONF_PORT, None)
+        ssh_key = conf.get(CONF_SSH_KEY, None)
 
         return create_connection_aioasuswrt(
             str(conf[CONF_HOST]),
@@ -113,7 +140,7 @@ class AsusWrtBridge:
                 connection_type=ConnectionType.TELNET
                 if conf[CONF_PROTOCOL] == PROTOCOL_TELNET
                 else ConnectionType.SSH,
-                ssh_key=str(conf.get(CONF_SSH_KEY)),
+                ssh_key=str(ssh_key) if ssh_key else None,
                 port=int(port) if port else None,
                 passphrase=None,
             ),

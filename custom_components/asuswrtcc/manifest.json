@@ -7,5 +7,6 @@
   "integration_type": "hub",
   "iot_class": "local_polling",
   "loggers": ["aioasuswrt"],
-  "requirements": ["aioasuswrt==2.1.0"]
+  "requirements": ["aioasuswrt==2.1.0"],
+  "version": "0.0.1"
 }

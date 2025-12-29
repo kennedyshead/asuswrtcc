@@ -1,6 +1,6 @@
 """AsusWrt component constants."""
 
-DOMAIN = "asuswrt"
+DOMAIN = "asuswrtcc"
 
 CONF_DNSMASQ = "dnsmasq"
 CONF_INTERFACE = "interface"
